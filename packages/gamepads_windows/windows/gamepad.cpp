@@ -141,10 +141,23 @@ void Gamepads::update_gamepads() {
   }
 }
 
+// A private message used to defer update_gamepads() to the next message loop
+// iteration. Using PostMessage instead of SetTimer avoids conflicts with any
+// timers (Flutter's or otherwise) that may use the same window and timer ID.
+static const UINT WM_GAMEPADS_UPDATE = WM_APP + 0x67;
+static bool gamepads_update_pending = false;
+
 std::optional<LRESULT> CALLBACK GamepadListenerProc(HWND hwnd,
                                                     UINT uMsg,
                                                     WPARAM wParam,
                                                     LPARAM lParam) {
+  // Handle our private deferred-update message.
+  if (uMsg == WM_GAMEPADS_UPDATE) {
+    gamepads_update_pending = false;
+    gamepads.update_gamepads();
+    return 0;
+  }
+
   switch (uMsg) {
     case WM_DEVICECHANGE: {
       if (lParam != NULL) {
@@ -156,22 +169,16 @@ std::optional<LRESULT> CALLBACK GamepadListenerProc(HWND hwnd,
                           GUID_DEVINTERFACE_HID)) {
             if (wParam == DBT_DEVICEARRIVAL ||
                 wParam == DBT_DEVICEREMOVECOMPLETE) {
-              // Debounce: a single physical device can generate many
-              // WM_DEVICECHANGE notifications (one per HID interface).
-              // Reset a short timer so we call update_gamepads() once
-              // after the flurry of events settles.
-              KillTimer(hwnd, 1);
-              SetTimer(hwnd, 1, 500, nullptr);
+              // Debounce: a single physical device generates one
+              // WM_DEVICECHANGE per HID interface it exposes. Post a single
+              // deferred update message; the pending flag prevents duplicates.
+              if (!gamepads_update_pending) {
+                gamepads_update_pending = true;
+                PostMessage(hwnd, WM_GAMEPADS_UPDATE, 0, 0);
+              }
             }
           }
         }
-      }
-      return 0;
-    }
-    case WM_TIMER: {
-      if (wParam == 1) {
-        KillTimer(hwnd, 1);
-        gamepads.update_gamepads();
       }
       return 0;
     }
