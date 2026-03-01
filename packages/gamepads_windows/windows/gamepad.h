@@ -1,15 +1,21 @@
 #include <windows.h>
+#include <atomic>
 #include <functional>
 #include <iostream>
 #include <list>
 #include <map>
+#include <memory>
 #include <optional>
+#include <string>
 
 struct Gamepad {
   UINT joy_id;
   std::string name;
   int num_buttons;
-  bool alive;
+  std::atomic<bool> alive{false};
+
+  Gamepad(UINT id, std::string n, int nb)
+      : joy_id(id), name(std::move(n)), num_buttons(nb), alive(true) {}
 };
 
 struct Event {
@@ -25,11 +31,11 @@ class Gamepads {
                                const JOYINFOEX& old,
                                const JOYINFOEX& current);
   bool are_states_different(const JOYINFOEX& a, const JOYINFOEX& b);
-  void read_gamepad(Gamepad* gamepad);
+  void read_gamepad(std::shared_ptr<Gamepad> gamepad);
   void connect_gamepad(UINT joy_id, std::string name, int num_buttons);
 
  public:
-  std::map<UINT, Gamepad> gamepads;
+  std::map<UINT, std::shared_ptr<Gamepad>> gamepads;
   std::optional<std::function<void(Gamepad* gamepad, const Event& event)>>
       event_emitter;
   void update_gamepads();

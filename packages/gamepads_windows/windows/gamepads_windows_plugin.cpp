@@ -38,12 +38,17 @@ GamepadsWindowsPlugin::GamepadsWindowsPlugin(
   gamepads.update_gamepads();
   window_proc_id = registrar->RegisterTopLevelWindowProcDelegate(
       [this](HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-        DEV_BROADCAST_DEVICEINTERFACE filter = {};
-        filter.dbcc_size = sizeof(filter);
-        filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
-        filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
-        this->hDevNotify = RegisterDeviceNotification(
-            hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+        // Register for HID device notifications exactly once, using the first
+        // HWND we see. Previously this was called on every message, leaking
+        // handles and causing a flood of WM_DEVICECHANGE notifications.
+        if (!this->hDevNotify) {
+          DEV_BROADCAST_DEVICEINTERFACE filter = {};
+          filter.dbcc_size = sizeof(filter);
+          filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+          filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
+          this->hDevNotify = RegisterDeviceNotification(
+              hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+        }
 
         return GamepadListenerProc(hwnd, message, wparam, lparam);
       });
@@ -59,12 +64,12 @@ void GamepadsWindowsPlugin::HandleMethodCall(
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   if (method_call.method_name().compare("listGamepads") == 0) {
     flutter::EncodableList list;
-    for (auto [device_id, gamepad] : gamepads.gamepads) {
+    for (auto& [device_id, gamepad] : gamepads.gamepads) {
       flutter::EncodableMap map;
       map[flutter::EncodableValue("id")] =
           flutter::EncodableValue(std::to_string(device_id));
       map[flutter::EncodableValue("name")] =
-          flutter::EncodableValue(gamepad.name);
+          flutter::EncodableValue(gamepad->name);
       list.push_back(flutter::EncodableValue(map));
     }
     result->Success(flutter::EncodableValue(list));

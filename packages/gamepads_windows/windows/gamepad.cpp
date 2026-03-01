@@ -9,7 +9,7 @@
 
 #include <list>
 #include <map>
-#include <set>
+#include <memory>
 #include <thread>
 
 #include "gamepad.h"
@@ -70,7 +70,7 @@ bool Gamepads::are_states_different(const JOYINFOEX& a, const JOYINFOEX& b) {
          a.dwButtons != b.dwButtons || a.dwPOV != b.dwPOV;
 }
 
-void Gamepads::read_gamepad(Gamepad* gamepad) {
+void Gamepads::read_gamepad(std::shared_ptr<Gamepad> gamepad) {
   JOYINFOEX state;
   state.dwSize = sizeof(JOYINFOEX);
   state.dwFlags = JOY_RETURNALL;
@@ -84,30 +84,40 @@ void Gamepads::read_gamepad(Gamepad* gamepad) {
     MMRESULT result = joyGetPosEx(joy_id, &state);
     if (result == JOYERR_NOERROR) {
       if (are_states_different(previous_state, state)) {
-        std::list<Event> events = diff_states(gamepad, previous_state, state);
+        std::list<Event> events = diff_states(gamepad.get(), previous_state, state);
         for (auto joy_event : events) {
           if (event_emitter.has_value()) {
-            (*event_emitter)(gamepad, joy_event);
+            (*event_emitter)(gamepad.get(), joy_event);
           }
         }
       }
     } else {
       std::cout << "Fail to listen to gamepad " << joy_id << std::endl;
       gamepad->alive = false;
-      gamepads.erase(joy_id);
     }
+    Sleep(1);
   }
 }
 
 void Gamepads::connect_gamepad(UINT joy_id, std::string name, int num_buttons) {
-  gamepads[joy_id] = {joy_id, name, num_buttons, true};
-  std::thread read_thread(
-      [this, joy_id]() { read_gamepad(&gamepads[joy_id]); });
+  auto gamepad = std::make_shared<Gamepad>(joy_id, name, num_buttons);
+  gamepads[joy_id] = gamepad;
+  std::thread read_thread([this, gamepad]() { read_gamepad(gamepad); });
   read_thread.detach();
 }
 
 void Gamepads::update_gamepads() {
   std::cout << "Updating gamepads..." << std::endl;
+
+  // Clean up entries whose polling threads have exited due to disconnection.
+  for (auto it = gamepads.begin(); it != gamepads.end(); ) {
+    if (!it->second->alive) {
+      it = gamepads.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
   UINT max_joysticks = joyGetNumDevs();
   JOYCAPSW joy_caps;
   for (UINT joy_id = 0; joy_id < max_joysticks; ++joy_id) {
@@ -115,13 +125,12 @@ void Gamepads::update_gamepads() {
     if (result == JOYERR_NOERROR) {
       std::string name = to_string(joy_caps.szPname);
       int num_buttons = static_cast<int>(joy_caps.wNumButtons);
-      std::optional<Gamepad> gamepad = gamepads[joy_id];
-      if (gamepad) {
-        if (gamepad->name != name) {
+      auto it = gamepads.find(joy_id);
+      if (it != gamepads.end()) {
+        if (it->second->name != name) {
           std::cout << "Updated gamepad " << joy_id << std::endl;
-          gamepad->alive = false;
-          gamepads.erase(joy_id);
-
+          it->second->alive = false;
+          gamepads.erase(it);
           connect_gamepad(joy_id, name, num_buttons);
         }
       } else {
@@ -131,8 +140,6 @@ void Gamepads::update_gamepads() {
     }
   }
 }
-
-std::set<std::wstring> connected_devices;
 
 std::optional<LRESULT> CALLBACK GamepadListenerProc(HWND hwnd,
                                                     UINT uMsg,
@@ -147,18 +154,24 @@ std::optional<LRESULT> CALLBACK GamepadListenerProc(HWND hwnd,
               (PDEV_BROADCAST_DEVICEINTERFACE)pHdr;
           if (IsEqualGUID(pDevInterface->dbcc_classguid,
                           GUID_DEVINTERFACE_HID)) {
-            std::wstring device_path = pDevInterface->dbcc_name;
-            bool is_connected =
-                connected_devices.find(device_path) != connected_devices.end();
-            if (!is_connected && wParam == DBT_DEVICEARRIVAL) {
-              connected_devices.insert(device_path);
-              gamepads.update_gamepads();
-            } else if (is_connected && wParam == DBT_DEVICEREMOVECOMPLETE) {
-              connected_devices.erase(device_path);
-              gamepads.update_gamepads();
+            if (wParam == DBT_DEVICEARRIVAL ||
+                wParam == DBT_DEVICEREMOVECOMPLETE) {
+              // Debounce: a single physical device can generate many
+              // WM_DEVICECHANGE notifications (one per HID interface).
+              // Reset a short timer so we call update_gamepads() once
+              // after the flurry of events settles.
+              KillTimer(hwnd, 1);
+              SetTimer(hwnd, 1, 500, nullptr);
             }
           }
         }
+      }
+      return 0;
+    }
+    case WM_TIMER: {
+      if (wParam == 1) {
+        KillTimer(hwnd, 1);
+        gamepads.update_gamepads();
       }
       return 0;
     }

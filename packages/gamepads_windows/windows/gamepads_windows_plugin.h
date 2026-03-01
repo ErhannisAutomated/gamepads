@@ -28,7 +28,7 @@ class GamepadsWindowsPlugin : public flutter::Plugin {
       channel{};
 
   int window_proc_id = -1;
-  HDEVNOTIFY hDevNotify;
+  HDEVNOTIFY hDevNotify = nullptr;
 
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue>& method_call,
